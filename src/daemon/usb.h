@@ -107,7 +107,11 @@
 #define P_POLARIS            0x1b3b
 #define IS_POLARIS(kb)       ((kb)->vendor == V_CORSAIR && ((kb)->product == P_POLARIS))
 
-#define N_MODELS 33
+#define P_VOID_USB_1         0x1b29
+#define P_VOID_USB_2         0x1b2a
+#define IS_VOID(kb)((kb)->vendor == V_CORSAIR && ((kb)->product == P_VOID_USB_1 || (kb)->product == P_VOID_USB_2))
+
+#define N_MODELS 35
 extern ushort models[];
 
 ///
@@ -194,6 +198,10 @@ const char* product_str(short product);
 // Mousepad test
 #define IS_MOUSEPAD(vendor, product)    ((vendor) == (V_CORSAIR) && (product) == (P_POLARIS))
 #define IS_MOUSEPAD_DEV(kb)             IS_MOUSEPAD((kb)->vendor, (kb)->product)
+
+// Headset test
+#define IS_HEADSET(vendor, product)     ((vendor) == (V_CORSAIR) && (product == P_VOID_USB_1 || product == P_VOID_USB_2))
+#define IS_HEADSET_DEV(kb)              IS_HEADSET((kb)->vendor, (kb)->product)
 
 #define USB_DELAY_DEFAULT   5
         
