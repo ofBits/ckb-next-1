@@ -68,6 +68,8 @@ public:
         KATAR,
         // Mousepads
         POLARIS,
+        // Headset models
+        VOID,
         _MODEL_MAX
     };
     // Key layouts (ordered alphabetically by name)

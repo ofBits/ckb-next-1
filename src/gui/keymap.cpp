@@ -368,6 +368,15 @@ static const Key PolarisZones[] = {
 };
 #define KEYCOUNT_POLARIS   (sizeof(PolarisZones) / sizeof(Key))
 
+// Void
+static const Key VoidKeys[] = {
+    {0, "Logo", "logo", 3, 3, 7, 7, true, false},
+};
+
+#define KEYCOUNT_VOID	(sizeof(VoidKeys) / sizeof(Key))
+
+#define VOID_WIDTH      5
+#define VOID_HEIGHT     5
 
 // Map getter. Each model/layout pair only needs to be constructed once; after that, future KeyMaps can copy the existing maps.
 #define N_MODELS    KeyMap::_MODEL_MAX
@@ -747,6 +756,12 @@ static QHash<QString, Key> getMap(KeyMap::Model model, KeyMap::Layout layout){
         }
         break;
     }
+    case KeyMap::VOID:{
+		for(const Key* key = VoidKeys; key < VoidKeys + KEYCOUNT_VOID; key++){
+		    map[key->name] = *key;
+		}
+		break;
+    }
     default:;    // <- stop GCC from complaining
     }
     // Map is finished, return result
@@ -969,6 +984,8 @@ KeyMap::Model KeyMap::getModel(const QString& name){
         return KATAR;
     if(lower == "polaris")
         return POLARIS;
+    if(lower == "void")
+        return VOID;
     return NO_MODEL;
 }
 
@@ -1004,6 +1021,8 @@ QString KeyMap::getModel(KeyMap::Model model){
         return "katar";
     case POLARIS:
         return "polaris";
+    case VOID:
+        return "void";
     default:
         return "";
     }
@@ -1041,6 +1060,8 @@ int KeyMap::modelWidth(Model model){
     case KATAR:
     case POLARIS:
         return M65_WIDTH;
+    case VOID:
+        return VOID_WIDTH;
     default:
         return 0;
     }
@@ -1066,6 +1087,8 @@ int KeyMap::modelHeight(Model model){
     case KATAR:
     case POLARIS:
         return M65_HEIGHT;
+    case VOID:
+        return VOID_HEIGHT;
     default:
         return 0;
     }
