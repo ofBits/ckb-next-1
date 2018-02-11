@@ -13,6 +13,8 @@ ushort models[N_MODELS] = {
     // Keyboards
     P_K55,
     P_K63_NRGB,
+    P_K63_NRGB_WL,
+    P_K63_NRGB_WL2,
     P_K65,
     P_K65_LEGACY,
     P_K65_LUX,
@@ -44,10 +46,12 @@ ushort models[N_MODELS] = {
     P_SABRE_O2,
     P_HARPOON,
     P_KATAR,
+    P_DARK_CORE,
+    P_DARK_CORE_SE,
     // Mousepads
     P_POLARIS,
     // Headset stands
-    P_ST100,
+    P_ST100
 };
 
 /// brief .
@@ -112,7 +116,7 @@ const char* product_str(short product){
         return "k68";
     if(product == P_K65 || product == P_K65_LEGACY || product == P_K65_LUX || product == P_K65_RFIRE)
         return "k65";
-    if(product == P_K63_NRGB)
+    if(product == P_K63_NRGB || product == P_K63_NRGB_WL || product == P_K63_NRGB_WL2)
         return "k63";
     if(product == P_K55)
         return "k55";
@@ -132,6 +136,8 @@ const char* product_str(short product){
         return "katar";
     if(product == P_POLARIS)
         return "polaris";
+    if(product == P_DARK_CORE || product == P_DARK_CORE_WL || product == P_DARK_CORE_SE || product == P_DARK_CORE_SE_WL)
+        return "darkcore";
     if(product == P_ST100)
         return "st100";
     return "";
