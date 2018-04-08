@@ -103,7 +103,6 @@ static int get_pipe_index(usb_iface_t handle, int desired_direction){
 
 int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* file, int line){
     kern_return_t res = kIOReturnSuccess;
-    ckb_info("Usbrecv called\n");
     if(is_recv)
         if(pthread_mutex_lock(intmutex(kb)))
             ckb_fatal("Error locking interrupt mutex in os_usbsend()\n");
@@ -234,9 +233,9 @@ int os_resetusb(usbdevice* kb, const char* file, int line){
 }
 
 static void intreport(void* context, IOReturn result, void* sender, IOHIDReportType reporttype, uint32_t reportid, uint8_t* data, CFIndex length){
-//#ifdef DEBUG_USB_INPUT
+#ifdef DEBUG_USB_INPUT
     print_urb_buffer("Input Recv:", data, length, NULL, 0, NULL);
-//#endif
+#endif
     process_input_urb(context, data, length, 0);
 }
 

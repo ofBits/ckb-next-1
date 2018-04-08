@@ -265,6 +265,28 @@ const key keymap[N_KEYS_EXTENDED] = {
     { "dpi5",       LED_MOUSE + 11, KEY_NONE },
 };
 
+// LUT for HID -> Corsair scancodes (-1 for no scan code, -2 for currently unsupported)
+// Modified from Linux drivers/hid/usbhid/usbkbd.c, key codes replaced with keymap array indices and K95 keys added
+// Make sure the indices match the keyindex as passed to nprintkey() in notify.c
+static const short hid_codes[256] = {
+     -1,  -1,  -1,  -1,  37,  54,  52,  39,  27,  40,  41,  42,  32,  43,  44,  45,
+     56,  55,  33,  34,  25,  28,  38,  29,  31,  53,  26,  51,  30,  50,  13,  14,
+     15,  16,  17,  18,  19,  20,  21,  22,  82,   0,  86,  24,  64,  23,  84,  35,
+     79,  80,  81,  46,  47,  12,  57,  58,  59,  36,   1,   2,   3,   4,   5,   6,
+      7,   8,   9,  10,  11,  72,  73,  74,  75,  76,  77,  78,  87,  88,  89,  95,
+     93,  94,  92, 102, 103, 104, 105, 106, 107, 115, 116, 117, 112, 113, 114, 108,
+    109, 110, 118, 119,  49,  69,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+     -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  98,  -2,  -2,  -2,  -2,  -2,  -2,  97,
+    130, 131,  -1,  -1,  -1,  -2,  -1,  83,  66,  85, 145, 144,  -2,  -1,  -1,  -1,
+     -2,  -2,  -2,  -2,  -2,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,
+     -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,
+     -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,
+     -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -3,  -1,  -1,  -1,  // <- -3 = non-RGB program key
+    120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 136, 137, 138, 139, 140, 141,
+     60,  48,  62,  61,  91,  90,  67,  68, 142, 143,  99, 101,  -2, 130, 131,  97,
+     -2, 133, 134, 135,  -2,  96,  -2, 132,  -2,  -2,  71,  71,  71,  71,  -1,  -1,
+};
+
 // There are three types of keyboard input. 6KRO, NKRO and Corsair.
 //
 // 6KRO is only enabled in BIOS mode, and since we do not touch devices in bios mode,
@@ -309,25 +331,29 @@ void process_input_urb(void* context, unsigned char *buffer, int urblen, ushort 
             ckb_fatal("Error unlocking interrupt mutex %i\n", retval);
     } else {
         pthread_mutex_lock(imutex(kb));
-        if(IS_MOUSE_DEV(kb)) {
-        // HID Mouse Input
-        if(firstbyte <= 0x01)
-            hid_mouse_translate(kb->input.keys, &kb->input.rel_x, &kb->input.rel_y, urblen, buffer);
-        // Corsair Mouse Input
-        else if(firstbyte == 0x03)
-            corsair_mousecopy(kb->input.keys, buffer);
-        else
-            ckb_err("Unknown mouse data received in input thread %x from endpoint %x\n", firstbyte, ep);
+        if(IS_LEGACY_DEV(kb)) {
+            hid_kb_translate(kb->input.keys, urblen, buffer, 1);
         } else {
-            // Assume Keyboard for everything else for now
-            // Accept NKRO only if device is active or if it's a legacy one. 0x02 == media keys
-            if(firstbyte == 0x01 || firstbyte == 0x02) {
-                if(!kb->active || IS_LEGACY_DEV(kb))
-                    hid_kb_translate(kb->input.keys, urblen, buffer);
-            } else if(firstbyte == 0x03)
-                corsair_kbcopy(kb->input.keys, buffer);
+            if(IS_MOUSE_DEV(kb)) {
+            // HID Mouse Input
+            if(firstbyte <= 0x01)
+                hid_mouse_translate(kb->input.keys, &kb->input.rel_x, &kb->input.rel_y, urblen, buffer);
+            // Corsair Mouse Input
+            else if(firstbyte == 0x03)
+                corsair_mousecopy(kb->input.keys, buffer);
             else
-                ckb_err("Unknown data received in input thread %x from endpoint %x\n", firstbyte, ep);
+                ckb_err("Unknown mouse data received in input thread %02x from endpoint %02x\n", firstbyte, ep);
+            } else {
+                // Assume Keyboard for everything else for now
+                // Accept NKRO only if device is active. 0x02 == media keys
+                if(firstbyte == 0x01 || firstbyte == 0x02) {
+                    if(!kb->active)
+                        hid_kb_translate(kb->input.keys, urblen, buffer, 0);
+                } else if(firstbyte == 0x03)
+                    corsair_kbcopy(kb->input.keys, buffer);
+                else
+                    ckb_err("Unknown data received in input thread %02x from endpoint %02x\n", firstbyte, ep);
+            }
         }
         ///
         /// The input data is transformed and copied to the kb structure. Now give it to the OS and unlock the imutex afterwards.
@@ -335,86 +361,82 @@ void process_input_urb(void* context, unsigned char *buffer, int urblen, ushort 
         pthread_mutex_unlock(imutex(kb));
     }
 }
-void hid_kb_translate(unsigned char* kbinput, int length, const unsigned char* urbinput){
-    // LUT for HID -> Corsair scancodes (-1 for no scan code, -2 for currently unsupported)
-    // Modified from Linux drivers/hid/usbhid/usbkbd.c, key codes replaced with keymap array indices and K95 keys added
-    // Make sure the indices match the keyindex as passed to nprintkey() in notify.c
-    static const short hid_codes[256] = {
-         -1,  -1,  -1,  -1,  37,  54,  52,  39,  27,  40,  41,  42,  32,  43,  44,  45,
-         56,  55,  33,  34,  25,  28,  38,  29,  31,  53,  26,  51,  30,  50,  13,  14,
-         15,  16,  17,  18,  19,  20,  21,  22,  82,   0,  86,  24,  64,  23,  84,  35,
-         79,  80,  81,  46,  47,  12,  57,  58,  59,  36,   1,   2,   3,   4,   5,   6,
-          7,   8,   9,  10,  11,  72,  73,  74,  75,  76,  77,  78,  87,  88,  89,  95,
-         93,  94,  92, 102, 103, 104, 105, 106, 107, 115, 116, 117, 112, 113, 114, 108,
-        109, 110, 118, 119,  49,  69,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
-         -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  98,  -2,  -2,  -2,  -2,  -2,  -2,  97,
-        130, 131,  -1,  -1,  -1,  -2,  -1,  83,  66,  85, 145, 144,  -2,  -1,  -1,  -1,
-         -2,  -2,  -2,  -2,  -2,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,
-         -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,
-         -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,
-         -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -3,  -1,  -1,  -1,  // <- -3 = non-RGB program key
-        120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 136, 137, 138, 139, 140, 141,
-         60,  48,  62,  61,  91,  90,  67,  68, 142, 143,  99, 101,  -2, 130, 131,  97,
-         -2, 133, 134, 135,  -2,  96,  -2, 132,  -2,  -2,  71,  71,  71,  71,  -1,  -1,
-    };
 
-    // NKRO Input
-    if(urbinput[0] == 0x01){
-        // Type 1: standard key
+void handle_nkro_key_input(unsigned char* kbinput, const unsigned char* urbinput, int length, int legacy){
+    int start = !legacy; // Legacy packets start from 0x00, other ones start from 0x01
+    for(int bit = 0; bit < 8; bit++){
+        if((urbinput[start] >> bit) & 1)
+            SET_KEYBIT(kbinput, hid_codes[bit + 224]);
+        else
+            CLEAR_KEYBIT(kbinput, hid_codes[bit + 224]);
+    }
+    int bytelen = (legacy ? 14 : 19);
+    for(int byte = 0; byte < bytelen; byte++){
+        char input = urbinput[start + byte + 1];
         for(int bit = 0; bit < 8; bit++){
-            if((urbinput[1] >> bit) & 1)
-                SET_KEYBIT(kbinput, hid_codes[bit + 224]);
-            else
-                CLEAR_KEYBIT(kbinput, hid_codes[bit + 224]);
+            int keybit = byte * 8 + bit;
+            int scan = hid_codes[keybit];
+            if((input >> bit) & 1){
+                if(scan >= 0)
+                    SET_KEYBIT(kbinput, hid_codes[keybit]);
+                else
+                    ckb_warn("Got unknown NKRO key press %d\n", keybit);
+            } else if(scan >= 0)
+                CLEAR_KEYBIT(kbinput, hid_codes[keybit]);
         }
-        for(int byte = 0; byte < 19; byte++){
-            char input = urbinput[byte + 2];
-            for(int bit = 0; bit < 8; bit++){
-                int keybit = byte * 8 + bit;
-                int scan = hid_codes[keybit];
-                if((input >> bit) & 1){
-                    if(scan >= 0)
-                        SET_KEYBIT(kbinput, hid_codes[keybit]);
-                    else
-                        ckb_warn("Got unknown NKRO key press %d\n", keybit);
-                } else if(scan >= 0)
-                    CLEAR_KEYBIT(kbinput, hid_codes[keybit]);
-            }
+    }
+}
+void handle_nkro_media_keys(unsigned char* kbinput, const unsigned char* urbinput, int length){
+    // Media keys
+    CLEAR_KEYBIT(kbinput, 97);          // mute
+    CLEAR_KEYBIT(kbinput, 98);          // stop
+    CLEAR_KEYBIT(kbinput, 99);          // prev
+    CLEAR_KEYBIT(kbinput, 100);         // play
+    CLEAR_KEYBIT(kbinput, 101);         // next
+    CLEAR_KEYBIT(kbinput, 130);         // volup
+    CLEAR_KEYBIT(kbinput, 131);         // voldn
+    for(int i = 0; i < length; i++){
+        switch(urbinput[i]){
+        case 181:
+            SET_KEYBIT(kbinput, 101);   // next
+            break;
+        case 182:
+            SET_KEYBIT(kbinput, 99);    // prev
+            break;
+        case 183:
+            SET_KEYBIT(kbinput, 98);    // stop
+            break;
+        case 205:
+            SET_KEYBIT(kbinput, 100);   // play
+            break;
+        case 226:
+            SET_KEYBIT(kbinput, 97);    // mute
+            break;
+        case 233:
+            SET_KEYBIT(kbinput, 130);   // volup
+            break;
+        case 234:
+            SET_KEYBIT(kbinput, 131);   // voldn
+            break;
         }
-    } else if (urbinput[0] == 0x02) {
-        // Media keys
-        CLEAR_KEYBIT(kbinput, 97);          // mute
-        CLEAR_KEYBIT(kbinput, 98);          // stop
-        CLEAR_KEYBIT(kbinput, 99);          // prev
-        CLEAR_KEYBIT(kbinput, 100);         // play
-        CLEAR_KEYBIT(kbinput, 101);         // next
-        CLEAR_KEYBIT(kbinput, 130);         // volup
-        CLEAR_KEYBIT(kbinput, 131);         // voldn
-        for(int i = 0; i < length; i++){
-            switch(urbinput[i]){
-            case 181:
-                SET_KEYBIT(kbinput, 101);   // next
-                break;
-            case 182:
-                SET_KEYBIT(kbinput, 99);    // prev
-                break;
-            case 183:
-                SET_KEYBIT(kbinput, 98);    // stop
-                break;
-            case 205:
-                SET_KEYBIT(kbinput, 100);   // play
-                break;
-            case 226:
-                SET_KEYBIT(kbinput, 97);    // mute
-                break;
-            case 233:
-                SET_KEYBIT(kbinput, 130);   // volup
-                break;
-            case 234:
-                SET_KEYBIT(kbinput, 131);   // voldn
-                break;
-            }
-        }
+    }
+}
+
+void hid_kb_translate(unsigned char* kbinput, int length, const unsigned char* urbinput, int legacy){
+    if(legacy) {
+        if(length == 4) // Media Keys
+            handle_nkro_media_keys(kbinput, urbinput, length);
+        else if(length == 15) // NKRO Input
+            handle_nkro_key_input(kbinput, urbinput, length, legacy);
+        else
+            ckb_warn("Got unknown legacy data\n");
+    } else {
+        if(urbinput[0] == 0x01)
+            handle_nkro_key_input(kbinput, urbinput, length, legacy);
+         else if (urbinput[0] == 0x02)
+            handle_nkro_media_keys(kbinput, urbinput, length);
+        else
+            ckb_warn("Got unknown data\n");
     }
 }
 

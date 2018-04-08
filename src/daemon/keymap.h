@@ -71,7 +71,7 @@ void process_input_urb(void* context, unsigned char* buffer, int urblen, ushort 
 
 // Translates input from HID to a ckb input bitfield.
 // Use positive endpoint for non-RGB keyboards, negative endpoint for RGB
-void hid_kb_translate(unsigned char* kbinput, int length, const unsigned char* urbinput);
+void hid_kb_translate(unsigned char* kbinput, int length, const unsigned char* urbinput, int legacy);
 void hid_mouse_translate(unsigned char* kbinput, short* xaxis, short* yaxis, int length, const unsigned char* urbinput);
 
 // Copies input from Corsair reports
