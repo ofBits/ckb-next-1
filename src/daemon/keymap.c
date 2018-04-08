@@ -335,14 +335,14 @@ void process_input_urb(void* context, unsigned char *buffer, int urblen, ushort 
             hid_kb_translate(kb->input.keys, urblen, buffer, 1);
         } else {
             if(IS_MOUSE_DEV(kb)) {
-            // HID Mouse Input
-            if(firstbyte <= 0x01)
-                hid_mouse_translate(kb->input.keys, &kb->input.rel_x, &kb->input.rel_y, urblen, buffer);
-            // Corsair Mouse Input
-            else if(firstbyte == 0x03)
-                corsair_mousecopy(kb->input.keys, buffer);
-            else
-                ckb_err("Unknown mouse data received in input thread %02x from endpoint %02x\n", firstbyte, ep);
+                // HID Mouse Input
+                if(firstbyte <= 0x01)
+                    hid_mouse_translate(kb->input.keys, &kb->input.rel_x, &kb->input.rel_y, urblen, buffer);
+                // Corsair Mouse Input
+                else if(firstbyte == 0x03)
+                    corsair_mousecopy(kb->input.keys, buffer);
+                else
+                    ckb_err("Unknown mouse data received in input thread %02x from endpoint %02x\n", firstbyte, ep);
             } else {
                 // Assume Keyboard for everything else for now
                 // Accept NKRO only if device is active. 0x02 == media keys
