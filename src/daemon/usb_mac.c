@@ -103,33 +103,20 @@ static int get_pipe_index(usb_iface_t handle, int desired_direction){
 
 int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* file, int line){
     kern_return_t res = kIOReturnSuccess;
-    ///
-    /// \todo Be aware: This condition is exact inverted to the condition in the linux dependent os_usbsend(). It may be correct, but please check it.
-    if((kb->fwversion < 0x120 && !IS_V2_OVERRIDE(kb)) || is_recv){
-        int ep = kb->epcount;
-        // For old devices, or for receiving data, use control transfers
-        IOUSBDevRequestTO rq = { 0x21, 0x09, 0x0200, ep - 1, MSG_SIZE, (void*)out_msg, 0, 5000, 5000 };
-        res = (*kb->handle)->DeviceRequestTO(kb->handle, &rq);
-        if(res == kIOReturnNotOpen){
-            // Device handle not open - try to send directly to the endpoint instead
-            usb_iface_t h_usb = kb->ifusb[ep - 1];
-            hid_dev_t h_hid = kb->ifhid[ep - 1];
-            if(h_usb)
-                res = (*h_usb)->ControlRequestTO(h_usb, 0, &rq);
-            else if(h_hid)
-                res = (*h_hid)->setReport(h_hid, kIOHIDReportTypeFeature, 0, out_msg, MSG_SIZE, 5000, 0, 0, 0);
-        }
-    } else {
-        // For newer devices, use interrupt transfers
-        // macOS sees 4 endpoints (including ep0) for FW 3.XX
-        int ep = (IS_SINGLE_EP(kb) ? 4 : (kb->fwversion >= 0x130 && (kb->fwversion < 0x200 || kb->fwversion >= 0x300 || IS_V3_OVERRIDE(kb))) ? 4 : 3);
-        usb_iface_t h_usb = kb->ifusb[ep - 1];
-        hid_dev_t h_hid = kb->ifhid[ep - 1];
-        if(h_usb)
-            res = (*h_usb)->WritePipe(h_usb, get_pipe_index(h_usb, kUSBOut), (void*)out_msg, MSG_SIZE);
-        else if(h_hid)
-            res = (*h_hid)->setReport(h_hid, kIOHIDReportTypeOutput, 0, out_msg, MSG_SIZE, 5000, 0, 0, 0);
-    }
+    ckb_info("Usbrecv called\n");
+    if(is_recv)
+        if(pthread_mutex_lock(intmutex(kb)))
+            ckb_fatal("Error locking interrupt mutex in os_usbsend()\n");
+
+    // Only call setReport for old control fw
+    int ep = (IS_SINGLE_EP(kb) ? 4 : (kb->fwversion >= 0x130 && (kb->fwversion < 0x200 || kb->fwversion >= 0x300 || IS_V3_OVERRIDE(kb))) ? 4 : 3);
+    usb_iface_t h_usb = kb->ifusb[ep - 1];
+    hid_dev_t h_hid = kb->ifhid[ep - 1];
+    if(h_usb)
+        res = (*h_usb)->WritePipe(h_usb, get_pipe_index(h_usb, kUSBOut), (void*)out_msg, MSG_SIZE);
+    else if(h_hid)
+        res = (*h_hid)->setReport(h_hid, kIOHIDReportTypeOutput, 0, out_msg, MSG_SIZE, 5000, 0, 0, 0);
+
     kb->lastresult = res;
     if(res != kIOReturnSuccess){
         ckb_err_fn("Got return value 0x%x\n", file, line, res);
@@ -138,11 +125,34 @@ int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* fil
         else
             return 0;
     }
+
+#ifdef DEBUG_USB_SEND
+    print_urb_buffer("Sent:", out_msg, MSG_SIZE, file, line, __func__);
+#endif
+
     return MSG_SIZE;
 }
 
 int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
-    int ep = kb->epcount;
+    CFIndex length = MSG_SIZE;
+    if(kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb)){
+        struct timespec condwait = {0, 0};
+        // Wait for 2s
+        condwait.tv_sec = time(NULL) + 2;
+        int condret = pthread_cond_timedwait(intcond(kb), intmutex(kb), &condwait);
+        if(condret != 0){
+            if(pthread_mutex_unlock(intmutex(kb)))
+                ckb_fatal("Error unlocking interrupt mutex in os_usbrecv()\n");
+            ckb_warn_fn("Interrupt cond error %i\n", file, line, condret);
+            return -1;
+        }
+        memcpy(in_msg, kb->interruptbuf, MSG_SIZE);
+        memset(kb->interruptbuf, 0, MSG_SIZE);
+        if(pthread_mutex_unlock(intmutex(kb)))
+            ckb_fatal("Error unlocking interrupt mutex in os_usbrecv()\n");
+    }// else {
+
+    /*int ep = kb->epcount;
     IOUSBDevRequestTO rq = { 0xa1, 0x01, 0x0200, ep - 1, MSG_SIZE, in_msg, 0, 5000, 5000 };
     kern_return_t res = (*kb->handle)->DeviceRequestTO(kb->handle, &rq);
     CFIndex length = rq.wLenDone;
@@ -164,7 +174,11 @@ int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
             return 0;
     }
     if(length != MSG_SIZE)
-        ckb_err_fn("Read %ld bytes (expected %d)\n", file, line, length, MSG_SIZE);
+        ckb_err_fn("Read %ld bytes (expected %d)\n", file, line, length, MSG_SIZE);*/
+
+#ifdef DEBUG_USB_RECV
+    print_urb_buffer("Recv:", in_msg, MSG_SIZE, file, line, __func__);
+#endif
     return length;
 }
 
@@ -179,44 +193,31 @@ int _nk95cmd(usbdevice* kb, uchar bRequest, ushort wValue, const char* file, int
 }
 
 void os_sendindicators(usbdevice* kb){
-    void *ileds;
-    ushort leds;
-    if(kb->fwversion >= 0x300 || IS_V3_OVERRIDE(kb)) {
-        leds = (kb->ileds << 8) | 0x0001;
-        ileds = &leds;
-    }
-    else {
-        ileds = &kb->ileds;
-    }
-    IOUSBDevRequestTO rq = { 0x21, 0x09, 0x0200, 0x00, ((kb->fwversion >= 0x300 || IS_V3_OVERRIDE(kb)) ? 2 : 1), ileds, 0, 500, 500 };
-    kern_return_t res = (*kb->handle)->DeviceRequestTO(kb->handle, &rq);
-    if(res == kIOReturnNotOpen){
-        // Handle not open - try to go through the HID system instead
-        hid_dev_t handle = kb->ifhid[0];
-        if(handle){
-            uchar ileds = kb->ileds;
-            // Get a list of LED elements from handle 0
-            long ledpage = kHIDPage_LEDs;
-            const void* keys[] = { CFSTR(kIOHIDElementUsagePageKey) };
-            const void* values[] = { CFNumberCreate(kCFAllocatorDefault, kCFNumberLongType, &ledpage) };
-            CFDictionaryRef matching = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-            CFRelease(values[0]);
-            CFArrayRef leds;
-            kern_return_t res = (*handle)->copyMatchingElements(handle, matching, &leds, 0);
-            CFRelease(matching);
-            if(res != kIOReturnSuccess)
-                return;
-            // Iterate through them and update the LEDs which have changed
-            CFIndex count = CFArrayGetCount(leds);
-            for(CFIndex i = 0; i < count; i++){
-                IOHIDElementRef led = (void*)CFArrayGetValueAtIndex(leds, i);
-                uint32_t usage = IOHIDElementGetUsage(led);
-                IOHIDValueRef value = IOHIDValueCreateWithIntegerValue(kCFAllocatorDefault, led, 0, !!(ileds & (1 << (usage - 1))));
-                (*handle)->setValue(handle, led, value, 5000, 0, 0, 0);
-                CFRelease(value);
-            }
-            CFRelease(leds);
+    hid_dev_t handle = kb->ifhid[0];
+    kern_return_t res = 0;
+    if(handle){
+        uchar ileds = kb->ileds;
+        // Get a list of LED elements from handle 0
+        long ledpage = kHIDPage_LEDs;
+        const void* keys[] = { CFSTR(kIOHIDElementUsagePageKey) };
+        const void* values[] = { CFNumberCreate(kCFAllocatorDefault, kCFNumberLongType, &ledpage) };
+        CFDictionaryRef matching = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFRelease(values[0]);
+        CFArrayRef leds;
+        res = (*handle)->copyMatchingElements(handle, matching, &leds, 0);
+        CFRelease(matching);
+        if(res != kIOReturnSuccess)
+            return;
+        // Iterate through them and update the LEDs which have changed
+        CFIndex count = CFArrayGetCount(leds);
+        for(CFIndex i = 0; i < count; i++){
+            IOHIDElementRef led = (void*)CFArrayGetValueAtIndex(leds, i);
+            uint32_t usage = IOHIDElementGetUsage(led);
+            IOHIDValueRef value = IOHIDValueCreateWithIntegerValue(kCFAllocatorDefault, led, 0, !!(ileds & (1 << (usage - 1))));
+            (*handle)->setValue(handle, led, value, 5000, 0, 0, 0);
+            CFRelease(value);
         }
+        CFRelease(leds);
     }
     if(res != kIOReturnSuccess)
         ckb_err("Got return value 0x%x\n", res);
@@ -233,55 +234,10 @@ int os_resetusb(usbdevice* kb, const char* file, int line){
 }
 
 static void intreport(void* context, IOReturn result, void* sender, IOHIDReportType reporttype, uint32_t reportid, uint8_t* data, CFIndex length){
-    usbdevice* kb = context;
-    pthread_mutex_lock(imutex(kb));
-    if(IS_MOUSE(kb->vendor, kb->product)){
-        switch(length){
-        case 7:
-        case 8:
-        case 10:
-        case 11:
-            hid_mouse_translate(kb->input.keys, &kb->input.rel_x, &kb->input.rel_y, -2, length, data, kb);
-            break;
-        case MSG_SIZE:
-            corsair_mousecopy(kb->input.keys, kb->epcount >= 4 ? -3 : -2, data);
-            break;
-        }
-    } else if(HAS_FEATURES(kb, FEAT_RGB)){
-        switch(length){
-        case 8:
-            // RGB EP 1: 6KRO (BIOS mode) input
-            hid_kb_translate(kb->input.keys, -1, length, data);
-            break;
-        case 21:
-        case 5:
-            // RGB EP 2: NKRO (non-BIOS) input. Accept only if keyboard is inactive
-            if(!kb->active)
-                hid_kb_translate(kb->input.keys, -2, length, data);
-            break;
-        case MSG_SIZE:
-            // RGB EP 3: Corsair input
-            corsair_kbcopy(kb->input.keys, kb->epcount >= 4 ? -3 : -2, data);
-            break;
-        }
-    } else {
-        switch(length){
-        case 8:
-            // Non-RGB EP 1: 6KRO input
-            hid_kb_translate(kb->input.keys, 1, length, data);
-            break;
-        case 4:
-            // Non-RGB EP 2: media keys
-            hid_kb_translate(kb->input.keys, 2, length, data);
-            break;
-        case 15:
-            // Non-RGB EP 3: NKRO input
-            hid_kb_translate(kb->input.keys, 3, length, data);
-            break;
-        }
-    }
-    inputupdate(kb);
-    pthread_mutex_unlock(imutex(kb));
+//#ifdef DEBUG_USB_INPUT
+    print_urb_buffer("Input Recv:", data, length, NULL, 0, NULL);
+//#endif
+    process_input_urb(context, data, length, 0);
 }
 
 typedef struct {
@@ -408,8 +364,14 @@ extern void keyretrigger(CFRunLoopTimerRef timer, void* info);
 
 void* os_inputmain(void* context){
     usbdevice* kb = context;
+
+    /// Allocate memory for the os_usbrecv() buffer and create the mutex
+    kb->interruptbuf = malloc(MSG_SIZE * sizeof(uchar));
+    if(!kb->interruptbuf)
+        ckb_fatal("Error allocating memory for usb_recv() %s\n", strerror(errno));
+
     int index = INDEX_OF(kb, keyboard);
-    // Monitor input transfers on all endpoints for non-RGB devices
+    // Monitor input transfers on all endpoints for non-legacy devices
     // For RGB, monitor all but the last, as it's used for input/output
     int count = IS_LEGACY_DEV(kb) ? kb->epcount : (kb->epcount - 1);
     // Schedule async events for the device on this thread
