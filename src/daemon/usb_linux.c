@@ -77,7 +77,7 @@ void print_urb_buffer(const char* prefix, const unsigned char* buffer, int actua
 ///
 int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* file, int line) {
     int res;
-    if (kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb)){
+    if ((kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb)) && !IS_HEADSET_DEV(kb)){
         // If we need to read a response, lock the interrupt mutex
         if(is_recv)
             if(pthread_mutex_lock(&kb->interruptmutex))
@@ -93,6 +93,8 @@ int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* fil
         res = ioctl(kb->handle - 1, USBDEVFS_BULK, &transfer);
     } else {
         // Note, Ctrl Transfers require an index, not an endpoint, which is why kb->epcount - 1 works
+        // FIXME: Headsets don't use MSG_SIZE
+        // FIXME: Use appropriate wValue for headsets
         struct usbdevfs_ctrltransfer transfer = { 0x21, 0x09, 0x0200, kb->epcount - 1, MSG_SIZE, 5000, (void*)out_msg };
         res = ioctl(kb->handle - 1, USBDEVFS_CONTROL, &transfer);
     }
@@ -145,7 +147,7 @@ int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* fil
 ///
 int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
     int res;
-    if(kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb)){
+    if((kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb)) && !IS_HEADSET_DEV(kb)){
         // Wait for 2s
         struct timespec condwait = {0};
         condwait.tv_sec = time(NULL) + 2;
@@ -162,6 +164,8 @@ int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
         if(pthread_mutex_unlock(&kb->interruptmutex))
             ckb_fatal("Error unlocking interrupt mutex in os_usbrecv()\n");
     } else {
+        // FIXME: Headsets don't use MSG_SIZE
+        // FIXME: Use appropriate wValue for headsets
         struct usbdevfs_ctrltransfer transfer = { 0xa1, 0x01, 0x0300, kb->epcount - 1, MSG_SIZE, 5000, in_msg };
         res = ioctl(kb->handle - 1, USBDEVFS_CONTROL, &transfer);
         if(res <= 0){
@@ -493,12 +497,20 @@ static int usbunclaim(usbdevice* kb, int resetting) {
     int handle = kb->handle - 1;
     int count = kb->epcount;
     for (int i = 0; i < count; i++) {
+        // Unclaim only the last IF for headsets
+        if(IS_HEADSET_DEV(kb) && i < count - 1)
+            continue;
         ioctl(handle, USBDEVFS_RELEASEINTERFACE, &i);
     }
     // For RGB keyboards, the kernel driver should only be reconnected to interfaces 0 and 1 (HID), and only if we're not about to do a USB reset.
     // Reconnecting any of the others causes trouble.
     if (!resetting) {
         struct usbdevfs_ioctl ctl = { 0, USBDEVFS_CONNECT, 0 };
+        if(IS_HEADSET_DEV(kb)){
+            ctl.ifno = count - 1;
+            ioctl(handle, USBDEVFS_IOCTL, &ctl);
+            return 0;
+        }
         ioctl(handle, USBDEVFS_IOCTL, &ctl);
         ctl.ifno = 1;
         ioctl(handle, USBDEVFS_IOCTL, &ctl);
@@ -549,6 +561,9 @@ static int usbclaim(usbdevice* kb){
 #endif // DEBUG
 
     for(int i = 0; i < count; i++){
+        // Claim only the last IF for headsets
+        if(IS_HEADSET_DEV(kb) && i < count - 1)
+            continue;
         struct usbdevfs_ioctl ctl = { i, USBDEVFS_DISCONNECT, 0 };
         ioctl(kb->handle - 1, USBDEVFS_IOCTL, &ctl);
         if(ioctl(kb->handle - 1, USBDEVFS_CLAIMINTERFACE, &i)) {
