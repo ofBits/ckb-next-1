@@ -103,19 +103,21 @@ static int get_pipe_index(usb_iface_t handle, int desired_direction){
 
 int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* file, int line){
     kern_return_t res = kIOReturnSuccess;
-    if(is_recv)
+    if(is_recv) //TODO: Add fwversion check and v2 override
         if(pthread_mutex_lock(intmutex(kb)))
             ckb_fatal("Error locking interrupt mutex in os_usbsend()\n");
 
-    // Only call setReport for old control fw
     int ep = (IS_SINGLE_EP(kb) ? 4 : (kb->fwversion >= 0x130 && (kb->fwversion < 0x200 || kb->fwversion >= 0x300 || IS_V3_OVERRIDE(kb))) ? 4 : 3);
     usb_iface_t h_usb = kb->ifusb[ep - 1];
     hid_dev_t h_hid = kb->ifhid[ep - 1];
+    // Try sending an interrupt, and if that fails, fall back to setReport through the HID driver.
     if(h_usb)
         res = (*h_usb)->WritePipe(h_usb, get_pipe_index(h_usb, kUSBOut), (void*)out_msg, MSG_SIZE);
     else if(h_hid)
         res = (*h_hid)->setReport(h_hid, kIOHIDReportTypeOutput, 0, out_msg, MSG_SIZE, 5000, 0, 0, 0);
-
+    else
+        return 0;
+    
     kb->lastresult = res;
     if(res != kIOReturnSuccess){
         ckb_err_fn("Got return value 0x%x\n", file, line, res);
@@ -133,8 +135,10 @@ int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* fil
 }
 
 int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
-    CFIndex length = MSG_SIZE;
-    if(kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb)){
+    UInt32 length = 0;
+    kern_return_t res = -1;
+
+    if((kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb) || IS_SINGLE_EP(kb))) {
         struct timespec condwait = {0, 0};
         // Wait for 2s
         condwait.tv_sec = time(NULL) + 2;
@@ -149,21 +153,29 @@ int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
         memset(kb->interruptbuf, 0, MSG_SIZE);
         if(pthread_mutex_unlock(intmutex(kb)))
             ckb_fatal("Error unlocking interrupt mutex in os_usbrecv()\n");
-    }// else {
 
-    /*int ep = kb->epcount;
-    IOUSBDevRequestTO rq = { 0xa1, 0x01, 0x0200, ep - 1, MSG_SIZE, in_msg, 0, 5000, 5000 };
-    kern_return_t res = (*kb->handle)->DeviceRequestTO(kb->handle, &rq);
-    CFIndex length = rq.wLenDone;
-    if(res == kIOReturnNotOpen){
-        // Device handle not open - try to send directly to the endpoint instead
-        usb_iface_t h_usb = kb->ifusb[ep - 1];
-        hid_dev_t h_hid = kb->ifhid[ep - 1];
-        if(h_usb)
-            res = (*h_usb)->ControlRequestTO(h_usb, 0, &rq);
-        else if(h_hid)
-            res = (*h_hid)->getReport(h_hid, kIOHIDReportTypeFeature, 0, in_msg, &length, 5000, 0, 0, 0);
+#ifdef DEBUG_USB_RECV
+        print_urb_buffer("Recv:", in_msg, MSG_SIZE, file, line, __func__);
+#endif
+        return MSG_SIZE;
+    } else {
+        // talk through the HID driver for older devices
+        /*int ep = kb->epcount;
+        IOUSBDevRequestTO rq = { 0xa1, 0x01, 0x0200, ep - 1, MSG_SIZE, in_msg, 0, 5000, 5000 };
+        kern_return_t res = (*kb->handle)->DeviceRequestTO(kb->handle, &rq);
+        CFIndex length = rq.wLenDone;
+        if(res == kIOReturnNotOpen){
+            // Device handle not open - try to send directly to the endpoint instead
+            usb_iface_t h_usb = kb->ifusb[ep - 1];
+            hid_dev_t h_hid = kb->ifhid[ep - 1];
+            if(h_usb)
+                res = (*h_usb)->ControlRequestTO(h_usb, 0, &rq);
+            else if(h_hid)
+                res = (*h_hid)->getReport(h_hid, kIOHIDReportTypeFeature, 0, in_msg, &length, 5000, 0, 0, 0);
+        }*/
     }
+    // If the function hasn't returned yet on success, it means we read from outside the input thread.
+    // Thus, we perform the necessary error handling
     kb->lastresult = res;
     if(res != kIOReturnSuccess){
         ckb_err_fn("Got return value 0x%x\n", file, line, res);
@@ -173,7 +185,7 @@ int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
             return 0;
     }
     if(length != MSG_SIZE)
-        ckb_err_fn("Read %ld bytes (expected %d)\n", file, line, length, MSG_SIZE);*/
+        ckb_err_fn("Read %u bytes (expected %d)\n", file, line, length, MSG_SIZE);
 
 #ifdef DEBUG_USB_RECV
     print_urb_buffer("Recv:", in_msg, MSG_SIZE, file, line, __func__);
@@ -363,11 +375,6 @@ extern void keyretrigger(CFRunLoopTimerRef timer, void* info);
 
 void* os_inputmain(void* context){
     usbdevice* kb = context;
-
-    /// Allocate memory for the os_usbrecv() buffer and create the mutex
-    kb->interruptbuf = malloc(MSG_SIZE * sizeof(uchar));
-    if(!kb->interruptbuf)
-        ckb_fatal("Error allocating memory for usb_recv() %s\n", strerror(errno));
 
     int index = INDEX_OF(kb, keyboard);
     // Monitor input transfers on all endpoints for non-legacy devices

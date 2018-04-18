@@ -50,17 +50,6 @@ ushort models[N_MODELS] = {
     P_ST100,
 };
 
-/// Formats and writes the current urb buffer to the console
-void print_urb_buffer(const char* prefix, const unsigned char* buffer, int actual_length, const char* file, int line, const char* function){
-    char converted[actual_length * 3 + 1];
-    for(int i = 0; i < actual_length; i++)
-        sprintf(&converted[i * 3], "%02x ", buffer[i]);
-    if(line == 0)
-        ckb_info("%s %s\n", prefix, converted);
-    else
-        ckb_info("%s (via %s:%d) %s %s\n", function, file, line, prefix, converted);
-}
-
 /// brief .
 ///
 /// \brief reset_stop is boolean: Reset stopper for when the program shuts down.
@@ -307,7 +296,7 @@ static void* _setupusb(void* context){
     if(IS_MONOCHROME(vendor, product)) kb->features |= FEAT_MONOCHROME;
     kb->usbdelay = USB_DELAY_DEFAULT;
 
-    /// Allocate memory for the os_usbrecv() buffer and create the mutex
+    /// Allocate memory for the os_usbrecv() buffer
     kb->interruptbuf = malloc(MSG_SIZE * sizeof(uchar));
     if(!kb->interruptbuf)
         ckb_fatal("Error allocating memory for usb_recv() %s\n", strerror(errno));
