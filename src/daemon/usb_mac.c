@@ -103,21 +103,29 @@ static int get_pipe_index(usb_iface_t handle, int desired_direction){
 
 int os_usbsend(usbdevice* kb, const uchar* out_msg, int is_recv, const char* file, int line){
     kern_return_t res = kIOReturnSuccess;
-    if(is_recv) //TODO: Add fwversion check and v2 override
-        if(pthread_mutex_lock(intmutex(kb)))
-            ckb_fatal("Error locking interrupt mutex in os_usbsend()\n");
 
-    int ep = (IS_SINGLE_EP(kb) ? 4 : (kb->fwversion >= 0x130 && (kb->fwversion < 0x200 || kb->fwversion >= 0x300 || IS_V3_OVERRIDE(kb))) ? 4 : 3);
-    usb_iface_t h_usb = kb->ifusb[ep - 1];
-    hid_dev_t h_hid = kb->ifhid[ep - 1];
-    // Try sending an interrupt, and if that fails, fall back to setReport through the HID driver.
-    if(h_usb)
-        res = (*h_usb)->WritePipe(h_usb, get_pipe_index(h_usb, kUSBOut), (void*)out_msg, MSG_SIZE);
-    else if(h_hid)
-        res = (*h_hid)->setReport(h_hid, kIOHIDReportTypeOutput, 0, out_msg, MSG_SIZE, 5000, 0, 0, 0);
-    else
-        return 0;
-    
+    if (kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb)){
+        int ep = (IS_SINGLE_EP(kb) || kb->fwversion >= 0x300 || IS_V3_OVERRIDE(kb)) ? 3 : 2;
+        usb_iface_t h_usb = kb->ifusb[ep];
+        hid_dev_t h_hid = kb->ifhid[ep];
+
+        if(is_recv)
+            if(pthread_mutex_lock(intmutex(kb)))
+                ckb_fatal("Error locking interrupt mutex in os_usbsend()\n");
+
+        // Try sending an interrupt, and if that fails, fall back to setReport through the HID driver.
+        // Needed for single EP devices.
+        if(h_usb)
+            res = (*h_usb)->WritePipe(h_usb, get_pipe_index(h_usb, kUSBOut), (void*)out_msg, MSG_SIZE);
+        else if(h_hid)
+            res = (*h_hid)->setReport(h_hid, kIOHIDReportTypeOutput, 0, out_msg, MSG_SIZE, 5000, 0, 0, 0);
+        else
+            return 0;
+    } else {
+        // All devices that call this will have the exact same EP configuration.
+        IOUSBDevRequestTO rq = { 0x21, 0x09, 0x0200, 3, MSG_SIZE, (void*)out_msg, 0, 5000, 5000 };
+        res = (*kb->handle)->DeviceRequestTO(kb->handle, &rq);
+    }
     kb->lastresult = res;
     if(res != kIOReturnSuccess){
         ckb_err_fn("Got return value 0x%x\n", file, line, res);
@@ -138,7 +146,8 @@ int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
     UInt32 length = 0;
     kern_return_t res = -1;
 
-    if((kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb) || IS_SINGLE_EP(kb))) {
+    // Read the data from the input thread
+    if((kb->fwversion >= 0x120 || IS_V2_OVERRIDE(kb))) {
         struct timespec condwait = {0, 0};
         // Wait for 2s
         condwait.tv_sec = time(NULL) + 2;
@@ -158,25 +167,15 @@ int os_usbrecv(usbdevice* kb, uchar* in_msg, const char* file, int line){
         print_urb_buffer("Recv:", in_msg, MSG_SIZE, file, line, __func__);
 #endif
         return MSG_SIZE;
-    } else {
-        // talk through the HID driver for older devices
-        /*int ep = kb->epcount;
-        IOUSBDevRequestTO rq = { 0xa1, 0x01, 0x0200, ep - 1, MSG_SIZE, in_msg, 0, 5000, 5000 };
-        kern_return_t res = (*kb->handle)->DeviceRequestTO(kb->handle, &rq);
-        CFIndex length = rq.wLenDone;
-        if(res == kIOReturnNotOpen){
-            // Device handle not open - try to send directly to the endpoint instead
-            usb_iface_t h_usb = kb->ifusb[ep - 1];
-            hid_dev_t h_hid = kb->ifhid[ep - 1];
-            if(h_usb)
-                res = (*h_usb)->ControlRequestTO(h_usb, 0, &rq);
-            else if(h_hid)
-                res = (*h_hid)->getReport(h_hid, kIOHIDReportTypeFeature, 0, in_msg, &length, 5000, 0, 0, 0);
-        }*/
     }
-    // If the function hasn't returned yet on success, it means we read from outside the input thread.
-    // Thus, we perform the necessary error handling
+
+    // If we haven't returned yet,
+    // try to read the data directly for older firmware
+    IOUSBDevRequestTO rq = { 0xa1, 0x01, 0x0200, 3, MSG_SIZE, in_msg, 0, 5000, 5000 };
+    res = (*kb->handle)->DeviceRequestTO(kb->handle, &rq);
+    length = rq.wLenDone;
     kb->lastresult = res;
+
     if(res != kIOReturnSuccess){
         ckb_err_fn("Got return value 0x%x\n", file, line, res);
         if(IS_TEMP_FAILURE(res))

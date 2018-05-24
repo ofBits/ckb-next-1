@@ -778,3 +778,14 @@ int closeusb(usbdevice* kb){
     memset(kb, 0, sizeof(usbdevice));
     return 0;
 }
+
+/// Formats and writes the current urb buffer to the console
+void print_urb_buffer(const char* prefix, const unsigned char* buffer, int actual_length, const char* file, int line, const char* function){
+    char converted[actual_length * 3 + 1];
+    for(int i = 0; i < actual_length; i++)
+        sprintf(&converted[i * 3], "%02x ", buffer[i]);
+    if(line == 0)
+        ckb_info("%s %s\n", prefix, converted);
+    else
+        ckb_info("%s (via %s:%d) %s %s\n", function, file, line, prefix, converted);
+}
