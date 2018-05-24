@@ -349,9 +349,11 @@ void process_input_urb(void* context, unsigned char *buffer, int urblen, ushort 
                 if(firstbyte == 0x01 || firstbyte == 0x02) {
                     if(!kb->active)
                         hid_kb_translate(kb->input.keys, urblen, buffer, 0);
-                } else if(firstbyte == 0x03)
+                } else if(urblen == MSG_SIZE){
+                    if((kb->fwversion >= 0x130 || IS_V2_OVERRIDE(kb)) && firstbyte == 0x03) // Ugly hack due to old FW 1.15 packets having no header
+                        buffer++;
                     corsair_kbcopy(kb->input.keys, buffer);
-                else
+                } else
                     ckb_err("Unknown data received in input thread %02x from endpoint %02x\n", firstbyte, ep);
             }
         }
@@ -466,7 +468,6 @@ void hid_mouse_translate(unsigned char* kbinput, short* xaxis, short* yaxis, int
 }
 
 void corsair_kbcopy(unsigned char* kbinput, const unsigned char* urbinput){
-    urbinput++;
     memcpy(kbinput, urbinput, N_KEYBYTES_HW);
 }
 
